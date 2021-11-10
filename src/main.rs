@@ -1,5 +1,7 @@
 use std::{collections::HashMap, convert::Infallible, sync::{Arc, RwLock}};
+use std::hash::Hash;
 use serde::{Serialize, Deserialize};
+use tide::{Body, Request, Response};
 use warp::{Filter, Rejection, Reply, reject, reply};
 use crate::error::Error::WrongCredentialsError;
 use crate::auth::{Role, with_auth};
@@ -22,13 +24,10 @@ pub struct LoginRequest {
     pub pw: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct LoginResponse {
     pub token: String,
 }
-
-
-
 
 type Result<T> = std::result::Result<T, error::Error>;
 type WebResult<T> = std::result::Result<T, Rejection>;
@@ -36,28 +35,13 @@ type Users = Arc<RwLock<HashMap<String, User>>>;
 
 #[tokio::main]
 async fn main() {
-    let users = Arc::new(RwLock::new(init_users()));
+    let mut app = tide::with_state(Arc::new(RwLock::new(init_users())));
 
-    let login_route = warp::path!("login")
-    .and(warp::post())
-    .and(with_users(users.clone()))
-    .and(warp::body::json::<LoginRequest>())
-    .and_then(login_handler);
+    app.at("/login").post(login_handler);
+    app.at("/user").post(user_handler);
+    app.at("/admin").post(admin_handler);
 
-    let user_route = warp::path!("user")
-    .and(with_auth(Role::User))
-    .and_then(user_handler);
-
-    let admin_route = warp::path!("admin")
-    .and(with_auth(Role::Admin))
-    .and_then(admin_handler);
-
-    let routes = login_route 
-    .or(user_route)
-    .or(admin_route)
-    .recover(error::handle_rejection);
-
-    warp::serve(routes).run(([127, 0, 0, 1], 8000)).await;
+    app.listen("127.0.0.1:8080").await;
 }
 
 fn init_users() -> HashMap<String, User> {
@@ -83,7 +67,7 @@ fn init_users() -> HashMap<String, User> {
     map
 }
 
-pub async fn login_handler( users: Users, body: LoginRequest) -> WebResult<impl Reply> {
+pub async fn login_handler(request: Request<Users>) -> tide::Result {
     match users.read() {
         Ok(read_handle) => {
             match read_handle
@@ -93,7 +77,7 @@ pub async fn login_handler( users: Users, body: LoginRequest) -> WebResult<impl 
                 Some((uid, user)) => {
                     let token = auth::create_jwt(&uid, &Role::from_str(&user.role))
                     .map_err(|e| reject::custom(e))?;
-                    Ok(reply::json(&LoginResponse { token }))
+                    Ok(Body::from_json(&LoginResponse { token }).into())
                 }
                 None => Err(reject::custom(WrongCredentialsError)),
             }
@@ -102,14 +86,10 @@ pub async fn login_handler( users: Users, body: LoginRequest) -> WebResult<impl 
     }
 }
 
-pub async fn user_handler(uid: String) -> WebResult<impl Reply> {
-    Ok(format!("Hello User {}", uid))
+pub async fn user_handler(uid: String) -> tide::Result {
+    Ok(format!("Hello User {}", uid).into())
 }
 
-pub async fn admin_handler(uid: String) -> WebResult<impl Reply> {
-    Ok(format!("Hello Admin {}", uid))
-}
-
-fn with_users(users: Users) -> impl Filter<Extract = (Users,), Error = Infallible> + Clone {
-    warp::any().map(move || users.clone())
+pub async fn admin_handler(uid: String) -> tide::Result {
+    Ok(format!("Hello Admin {}", uid).into())
 }
